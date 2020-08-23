@@ -3,7 +3,7 @@ pragma solidity ^0.6.0;
 
 import "FreePair.sol";
 
-contract FreeFactory {
+contract FreeFactory is IFreeFactory {
 
     using SafeMath for uint256;
 
@@ -12,13 +12,12 @@ contract FreeFactory {
     mapping(address => address) public pairToToken; // todo: add name
     mapping(uint256 => address) public idToToken;
 
-    mapping (address => bool) public notaryMap;
+    mapping (address => bool) public override notaryMap;
     address[] public notaryList;
-    uint256 public notaryCount;
-
-    event NewPair(address creator, address token, uint256 pair); // todo: add name
+    uint256 public override notaryCount;
 
     constructor (address[] memory notary) public {
+        // consume too many gas !!
         notaryList = notary;
         for (uint256 i = 0; i < notary.length; i++) {
              notaryMap[notary[i]] = true;
@@ -26,11 +25,12 @@ contract FreeFactory {
         notaryCount = notary.length;
     }
 
-    function createPair(string memory sideChainName, address token) public returns (address) {
+    function createPair(string memory sideChainName, address token) public override returns (address) {
         require(notaryMap[msg.sender], "this can only be called by notary");
         require(token != address(0), "token cann't be zero address");
         require(tokenToPair[token] == address(0), "this token pair has existed");
-        address pair = new FreePair(sideChainName, token);
+        FreePair freePair = new FreePair(sideChainName, token);
+        address pair = address(freePair);
         tokenToPair[token] = pair;
         pairToToken[pair] = token;
         uint256 tokenId = tokenCount + 1;

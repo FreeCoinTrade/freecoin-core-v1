@@ -3,7 +3,7 @@ pragma solidity ^0.6.0;
 
 import "IFreeERC20.sol";
 import "SafeMath.sol";
-import "FreePair.sol"; // 循环调用了吗？
+import "IFreePair.sol";
 
 // 1. token，此时肯定没有pair，pair临时为msg.sender
 // 2. factory，里面创建pair
@@ -23,14 +23,14 @@ contract FreeERC20 is IFreeERC20 {
     string private _symbol;
     uint8 private _decimals;
 
-    FreePair public pair;
+    IFreePair public pair;
 
     // 每个代币的小数点不一样，好好设计一下
     constructor (string memory name, string memory symbol, uint8 decimals) public {
         _name = name;
         _symbol = symbol;
         _decimals = decimals;
-        pair = FreePair(msg.sender); // temp
+        pair = IFreePair(msg.sender); // temp
     }
     
     function name() public view returns (string memory) {
@@ -83,23 +83,31 @@ contract FreeERC20 is IFreeERC20 {
         return true;
     }
     
-    function burn(uint256 amount, string recipientOnSideChain) public virtual returns (bool) {
+    function burn(uint256 amount, string memory recipientOnSideChain) public virtual override returns (bool) {
         // for redeem
         _burn(msg.sender, amount, recipientOnSideChain);
         return true;
     }
     
-    function burnFrom(address account, uint256 amount, string recipientOnSideChain) public virtual {
+    function burnFrom(address account, uint256 amount, string memory recipientOnSideChain) public virtual override {
         // for migration to v2 later
         uint256 decreasedAllowance = _allowances[account][msg.sender].sub(amount, "ERC20: burn amount exceeds allowance");
         _approve(account, msg.sender, decreasedAllowance);
         _burn(account, amount, recipientOnSideChain);
     }
     
-    function mint(address account, uint256 amount) public virtual returns (bool) {
-        require(msg.sender == pair, "ERC20: mint only can be called by pair");
+    function mint(address account, uint256 amount) public virtual override returns (bool) {
+        require(msg.sender == address(pair), "ERC20: mint only can be called by pair");
         _mint(account, amount);
         return true;
+    }
+    
+    function migratePair(address newPair) public override returns (bool) {
+        // 1. for migration to v1 after create
+        // 2. for migration to v2 later
+        require(msg.sender == address(pair), "ERC20: migratePair only can be called by pair"); // todo test
+        emit MigratePair(address(pair), newPair);
+        pair = IFreePair(newPair);
     }
 
     function _transfer(address sender, address recipient, uint256 amount) internal virtual {
@@ -132,12 +140,5 @@ contract FreeERC20 is IFreeERC20 {
 
         _allowances[owner][spender] = amount;
         emit Approval(owner, spender, amount);
-    }
-
-    function migratePair(address newPair) public returns (bool) {
-        // 1. for migration to v1 after create
-        // 2. for migration to v2 later
-        require(msg.sender == pair, "ERC20: migratePair only can be called by pair"); // todo test
-        pair = FreePair(newPair);
     }
 }
