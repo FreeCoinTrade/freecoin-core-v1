@@ -260,4 +260,8 @@ contract FreePair is IFreePair {
     function burnCount() public view returns (uint256) {
         return burnProposal.length;
     }
+
+    function getMintStatus(uint256 mintProposalId) public view returns (bool) {
+        return mintProposal[mintProposalId].success;
+    }
 }
