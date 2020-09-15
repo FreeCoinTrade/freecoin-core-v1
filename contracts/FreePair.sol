@@ -58,6 +58,7 @@ contract FreePair is IFreePair {
     }
 
     MintProposalInfo[] public mintProposal;
+    mapping (bytes32 => uint256) txOnSideChainIndex;
     mapping (uint256 => mapping (address => bool)) private mintProposalApprove;
 
     // 提现的时候，用户可以随便指定接收地址，burn之后，就产生了一条记录，
@@ -66,22 +67,24 @@ contract FreePair is IFreePair {
     // ERC20 burn 由这个合约控制 ？不行？？ 要么就回调
     struct BurnProposalInfo {
         address sender;
+        uint256 amount;
         string recipientOnSideChain;
+        uint256 amountOnSideChain;
+        string txOnSideChain;
         uint8 approve;
         bool success;
-        uint256 amount;
-        string txOnSideChain;
     }
     BurnProposalInfo[] public burnProposal;
     mapping (uint256 => mapping (address => bool)) private burnProposalApprove;
 
-    uint256 public migrateProposalCount;
+    uint256 public migrateProposalApproveCount;
     mapping (address => bool) private migrateProposalApprove;
 
     constructor (string memory _sideChainName, address _token) public {
         iFreeFactory = IFreeFactory(msg.sender);
         sideChainName = _sideChainName;
         token = IFreeERC20(_token);
+        mintProposal.push(MintProposalInfo("", 0, "", 0, 0, true));
     }
 
     function pushAddr(uint256 pushAddrProposalId, string[] memory addrs) public virtual override returns (bool) {
@@ -130,19 +133,22 @@ contract FreePair is IFreePair {
     }
 
     // 每个代币的小数点的统计！！
-    function depositConfirm(uint256 mintProposalId, string memory senderOnSideChain, uint256 amountOnSideChain, uint256 amount, string memory txOnSideChain) public virtual override returns (bool) {
+    function depositConfirm(string memory txOnSideChain, string memory senderOnSideChain, uint256 amountOnSideChain, uint256 amount) public virtual override returns (bool) {
         require(iFreeFactory.notaryMap(msg.sender), "depositConfirm can only be called by notary");
         require(migrated == false, "this pair has migrated to pair v2, please use pair v2");
         address sender;
-        if (mintProposalId >= mintProposal.length) {
+        uint256 mintProposalId = txOnSideChainIndex[keccak256(bytes(txOnSideChain))];
+        if (mintProposalId == 0) {
             // new mint proposal
             sender = senderInfoMap[keccak256(bytes(senderOnSideChain))].sender;
             require(sender != address(0), "the senderOnSideChain has not sent depositRequest");
             mintProposal.push(MintProposalInfo(senderOnSideChain, amountOnSideChain, txOnSideChain, amount, 1, false));
-            mintProposalApprove[mintProposal.length - 1][msg.sender] = true;
             mintProposalId = mintProposal.length - 1;
+            mintProposalApprove[mintProposalId][msg.sender] = true;
+            txOnSideChainIndex[keccak256(bytes(txOnSideChain))] = mintProposalId;
             // todo log list index
         } else {
+            // existed mint proposal
             senderOnSideChain = mintProposal[mintProposalId].senderOnSideChain;
             sender = senderInfoMap[keccak256(bytes(senderOnSideChain))].sender;
             require(sender != address(0), "the senderOnSideChain has not sent depositRequest");
@@ -153,7 +159,7 @@ contract FreePair is IFreePair {
         }
 
         if (mintProposal[mintProposalId].approve >= iFreeFactory.notaryCount() * 2 / 3 && mintProposal[mintProposalId].success == false) { // needn't SafeMath
-            token.mint(sender, mintProposal[mintProposalId].amount); // fixme: will revert?
+            token.mint(sender, mintProposal[mintProposalId].amount); // fixme: internal error will revert?
             mintProposal[mintProposalId].success = true;
             // todo log
             return true;
@@ -165,17 +171,20 @@ contract FreePair is IFreePair {
     // 注意小数点转换！！
     function withdrawRequest(address sender, string memory recipientOnSideChain, uint256 amount) public virtual override returns (bool) {
         require(msg.sender == address(token), "sender must be the token");
-        burnProposal.push(BurnProposalInfo(sender, recipientOnSideChain, 0, false, amount, ""));
+        burnProposal.push(BurnProposalInfo(sender, amount, recipientOnSideChain, 0, "", 0, false));
         // todo log list index
         return true;
     }
 
     // 每个代币的小数点的统计！！
-    function withdrawConfirm(uint256 burnProposalId, string memory txOnSideChain) public virtual override returns (bool) {
+    function withdrawConfirm(uint256 burnProposalId, uint256 amountOnSideChain, string memory txOnSideChain) public virtual override returns (bool) {
         require(iFreeFactory.notaryMap(msg.sender), "withdrawConfirm can only be called by notary");
         require(burnProposalId < burnProposal.length, "burnProposalId exceeds the index range of burnProposal");
+        // maybe one notary write wrong data, later multi-sign off-chain
+        // use temp BurnProposalInfo will save gas ?
         if (burnProposal[burnProposalId].approve == 0) {
             burnProposal[burnProposalId].approve = 1;
+            burnProposal[burnProposalId].amountOnSideChain = amountOnSideChain;
             burnProposal[burnProposalId].txOnSideChain = txOnSideChain;
             burnProposalApprove[burnProposalId][msg.sender] = true;
         } else {
@@ -198,9 +207,9 @@ contract FreePair is IFreePair {
         // for migration to v2 later
         require(iFreeFactory.notaryMap(msg.sender), "migratePair can only be called by notary");
         if (migrateProposalApprove[msg.sender] == false) {
-            migrateProposalCount += 1;
+            migrateProposalApproveCount += 1;
         }
-        if (migrateProposalCount >= iFreeFactory.notaryCount() * 2 / 3) {
+        if (migrateProposalApproveCount >= iFreeFactory.notaryCount() * 2 / 3) {
             token.migratePair(newPair);
             migrated = true;
             return true;
@@ -225,6 +234,7 @@ contract FreePair is IFreePair {
     }
 
     function getMintList(uint256 fromInclusive, uint256 toExclusive) public view returns (RetMintProposalInfo[] memory, uint256) {
+        require(fromInclusive > 0, "fromInclusive should be greater than 0");
         if (toExclusive > mintProposal.length) {
             toExclusive = mintProposal.length;
         }
@@ -237,10 +247,10 @@ contract FreePair is IFreePair {
             ret[i++] = RetMintProposalInfo(mintInfo.senderOnSideChain, mintInfo.amountOnSideChain,
                 mintInfo.txOnSideChain, sender, mintInfo.amount, mintInfo.approve, mintInfo.success);
         }
-        return (ret, mintProposal.length);
+        return (ret, mintProposal.length); // todo
     }
 
-    function getBurnList(uint256 fromInclusive, uint256 toExclusive) public view returns (BurnProposalInfo[] memory) {
+    function getBurnList(uint256 fromInclusive, uint256 toExclusive) public view returns (BurnProposalInfo[] memory, uint256) {
         if (toExclusive > burnProposal.length) {
             toExclusive = burnProposal.length;
         }
@@ -250,7 +260,7 @@ contract FreePair is IFreePair {
         for (uint256 j = fromInclusive; j < toExclusive; j++) {
             ret[i++] = burnProposal[j];
         }
-        return ret;
+        return (ret, burnProposal.length);
     }
 
     function mintCount() public view returns (uint256) {
@@ -263,5 +273,15 @@ contract FreePair is IFreePair {
 
     function getMintStatus(uint256 mintProposalId) public view returns (bool) {
         return mintProposal[mintProposalId].success;
+    }
+
+    function getBurnStatus(uint256 burnProposalId) public view returns (bool) {
+        return burnProposal[burnProposalId].success;
+    }
+
+    function getBurnInfo(uint256 burnProposalId) public view returns(address, uint256, string memory, uint256, string memory, uint8, bool) {
+        BurnProposalInfo storage info = burnProposal[burnProposalId];
+        return (info.sender, info.amount, info.recipientOnSideChain, info.amountOnSideChain, info.txOnSideChain,
+        info.approve, info.success);
     }
 }
